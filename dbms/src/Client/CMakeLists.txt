@@ -18,14 +18,17 @@ endif()
 
 add_executable(clickhouse-client Client.cpp)
 add_executable(clickhouse-benchmark Benchmark.cpp)
+add_executable(clickhouse-local LocalServer.cpp)
 
 target_link_libraries (clickhouse-client dbms ${LINE_EDITING_LIBS} libboost_program_options.a)
 target_link_libraries (clickhouse-benchmark dbms libboost_program_options.a)
+target_link_libraries (clickhouse-local dbms libboost_program_options.a)
 
 INSTALL(TARGETS clickhouse-client RUNTIME DESTINATION bin COMPONENT clickhouse-client)
-INSTALL(FILES config.xml DESTINATION /etc/clickhouse-client  COMPONENT clickhouse-client)
+INSTALL(FILES config.xml DESTINATION /etc/clickhouse-client COMPONENT clickhouse-client)
 
-INSTALL(TARGETS clickhouse-benchmark RUNTIME DESTINATION bin  COMPONENT clickhouse-benchmark)
+INSTALL(TARGETS clickhouse-benchmark RUNTIME DESTINATION bin COMPONENT clickhouse-benchmark)
+INSTALL(TARGETS clickhouse-local RUNTIME DESTINATION bin COMPONENT clickhouse-local)
 
 IF(TESTS)
 	add_subdirectory (tests)
