@@ -231,7 +231,9 @@ struct Settings
 	M(SettingBool, output_format_json_quote_64bit_integers, true) \
 	\
 	/** Use client timezone for interpreting DateTime string values, instead of adopting server timezone. */ \
-	M(SettingBool, use_client_time_zone, false)
+	M(SettingBool, use_client_time_zone, false) \
+	/** Development. */ \
+	M(SettingBool, use_vectorized_aggregation, false)
 
 	/// Всевозможные ограничения на выполнение запроса.
 	Limits limits;

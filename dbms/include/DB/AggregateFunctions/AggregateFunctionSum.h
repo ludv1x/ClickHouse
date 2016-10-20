@@ -64,6 +64,28 @@ public:
 	{
 		static_cast<ColumnVector<typename NearestFieldType<T>::Type> &>(to).getData().push_back(this->data(place).sum);
 	}
+
+	using Data = AggregateFunctionSumData<typename NearestFieldType<T>::Type>;
+
+	bool supportsChunks() const override
+	{
+		return true;
+	}
+
+	void addChunks(const IColumn ** columns, StatesList & states, Arena * arena) const override
+	{
+		const T * column_data = &static_cast<const ColumnVector<T> &>(*columns[0]).getData()[0];
+
+		size_t i = 0;
+		for (size_t group_num = 0; group_num < states.size(); group_num++)
+		{
+			Data & state_data = *reinterpret_cast<Data *>(states[group_num].state);
+			size_t group_end = i + states[group_num].group_size;
+
+			for (; i < group_end; ++i)
+				state_data.sum += column_data[i];
+		}
+	}
 };
 
 

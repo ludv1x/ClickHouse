@@ -496,6 +496,7 @@ void NO_INLINE Aggregator::executeImpl(
 	size_t rows,
 	ConstColumnPlainPtrs & key_columns,
 	AggregateFunctionInstruction * aggregate_instructions,
+	AggregateFunctionInstruction * aggregate_instructions_vectorized,
 	const Sizes & key_sizes,
 	StringRefs & keys,
 	bool no_more_keys,
@@ -505,9 +506,11 @@ void NO_INLINE Aggregator::executeImpl(
 	state.init(key_columns);
 
 	if (!no_more_keys)
-		executeImplCase<false>(method, state, aggregates_pool, rows, key_columns, aggregate_instructions, key_sizes, keys, overflow_row);
+		executeImplCase<false>(method, state, aggregates_pool, rows, key_columns, aggregate_instructions,
+							   aggregate_instructions_vectorized, key_sizes, keys, overflow_row);
 	else
-		executeImplCase<true>(method, state, aggregates_pool, rows, key_columns, aggregate_instructions, key_sizes, keys, overflow_row);
+		executeImplCase<true>(method, state, aggregates_pool, rows, key_columns, aggregate_instructions,
+							  aggregate_instructions_vectorized, key_sizes, keys, overflow_row);
 }
 
 #ifndef __clang__
@@ -523,6 +526,7 @@ void NO_INLINE Aggregator::executeImplCase(
 	size_t rows,
 	ConstColumnPlainPtrs & key_columns,
 	AggregateFunctionInstruction * aggregate_instructions,
+	AggregateFunctionInstruction * aggregate_instructions_vectorized,
 	const Sizes & key_sizes,
 	StringRefs & keys,
 	AggregateDataPtr overflow_row) const
@@ -610,6 +614,7 @@ void NO_INLINE Aggregator::executeWithoutKeyImpl(
 	AggregatedDataWithoutKey & res,
 	size_t rows,
 	AggregateFunctionInstruction * aggregate_instructions,
+	AggregateFunctionInstruction * aggregate_instructions_vectorized,
 	Arena * arena) const
 {
 	/// Оптимизация в случае единственной агрегатной функции count.
@@ -621,6 +626,15 @@ void NO_INLINE Aggregator::executeWithoutKeyImpl(
 		agg_count->addDelta(res, rows);
 	else
 	{
+		if (aggregate_instructions_vectorized->that) //we have vectorized instuction
+		{
+			for (AggregateFunctionInstruction * inst = aggregate_instructions_vectorized; inst->that; ++inst)
+			{
+				StatesList cur_states_list(1, GroupOfStates(rows, res + inst->state_offset));
+				inst->that->addChunks(inst->arguments, cur_states_list, arena);
+			}
+		}
+
 		for (size_t i = 0; i < rows; ++i)
 		{
 			/// Добавляем значения
@@ -664,8 +678,11 @@ bool Aggregator::executeOnBlock(Block & block, AggregatedDataVariants & result,
 		}
 	}
 
-	AggregateFunctionInstructions aggregate_functions_instructions(params.aggregates_size + 1);
-	aggregate_functions_instructions[params.aggregates_size].that = nullptr;
+
+	AggregateFunctionInstructions aggregate_instructions_vectorized;
+	AggregateFunctionInstructions aggregate_instructions;
+	aggregate_instructions_vectorized.reserve(params.aggregates_size + 1);
+	aggregate_instructions.reserve(params.aggregates_size + 1);
 
 	for (size_t i = 0; i < params.aggregates_size; ++i)
 	{
@@ -680,11 +697,22 @@ bool Aggregator::executeOnBlock(Block & block, AggregatedDataVariants & result,
 			}
 		}
 
-		aggregate_functions_instructions[i].that = aggregate_functions[i];
-		aggregate_functions_instructions[i].func = aggregate_functions[i]->getAddressOfAddFunction();
-		aggregate_functions_instructions[i].state_offset = offsets_of_aggregate_states[i];
-		aggregate_functions_instructions[i].arguments = aggregate_columns[i].data();
+		auto & instructions = (params.use_vectorized_aggregation && aggregate_functions[i]->supportsChunks()) ?
+			aggregate_instructions_vectorized : aggregate_instructions;
+		instructions.emplace_back();
+		auto & instruction = instructions.back();
+
+		instruction.that = aggregate_functions[i];
+		instruction.func = aggregate_functions[i]->getAddressOfAddFunction();
+		instruction.state_offset = offsets_of_aggregate_states[i];
+		instruction.arguments = aggregate_columns[i].data();
 	}
+
+	aggregate_instructions_vectorized.emplace_back();
+	aggregate_instructions_vectorized.back().that = nullptr;
+	aggregate_instructions.emplace_back();
+	aggregate_instructions.back().that = nullptr;
+
 
 	if (isCancelled())
 		return true;
@@ -719,14 +747,15 @@ bool Aggregator::executeOnBlock(Block & block, AggregatedDataVariants & result,
 	if (result.type == AggregatedDataVariants::Type::without_key)
 	{
 		/// Если есть динамически скомпилированный код.
-		if (compiled_data->compiled_method_ptr)
+		if (!params.use_vectorized_aggregation && compiled_data->compiled_method_ptr)
 		{
 			reinterpret_cast<
 				void (*)(const Aggregator &, AggregatedDataWithoutKey &, size_t, AggregateColumns &, Arena *)>
 					(compiled_data->compiled_method_ptr)(*this, result.without_key, rows, aggregate_columns, result.aggregates_pool);
 		}
 		else
-			executeWithoutKeyImpl(result.without_key, rows, &aggregate_functions_instructions[0], result.aggregates_pool);
+			executeWithoutKeyImpl(result.without_key, rows, &aggregate_instructions[0],
+				&aggregate_instructions_vectorized[0], result.aggregates_pool);
 	}
 	else
 	{
@@ -736,7 +765,7 @@ bool Aggregator::executeOnBlock(Block & block, AggregatedDataVariants & result,
 		bool is_two_level = result.isTwoLevel();
 
 		/// Скомпилированный код, для обычной структуры.
-		if (!is_two_level && compiled_data->compiled_method_ptr)
+		if (!params.use_vectorized_aggregation && !is_two_level && compiled_data->compiled_method_ptr)
 		{
 		#define M(NAME, IS_TWO_LEVEL) \
 			else if (result.type == AggregatedDataVariants::Type::NAME) \
@@ -752,7 +781,7 @@ bool Aggregator::executeOnBlock(Block & block, AggregatedDataVariants & result,
 		#undef M
 		}
 		/// Скомпилированный код, для two-level структуры.
-		else if (is_two_level && compiled_data->compiled_two_level_method_ptr)
+		else if (!params.use_vectorized_aggregation && is_two_level && compiled_data->compiled_two_level_method_ptr)
 		{
 		#define M(NAME) \
 			else if (result.type == AggregatedDataVariants::Type::NAME) \
@@ -772,8 +801,8 @@ bool Aggregator::executeOnBlock(Block & block, AggregatedDataVariants & result,
 		{
 		#define M(NAME, IS_TWO_LEVEL) \
 			else if (result.type == AggregatedDataVariants::Type::NAME) \
-				executeImpl(*result.NAME, result.aggregates_pool, rows, key_columns, &aggregate_functions_instructions[0], \
-					result.key_sizes, key, no_more_keys, overflow_row_ptr);
+				executeImpl(*result.NAME, result.aggregates_pool, rows, key_columns, &aggregate_instructions[0],  \
+					&aggregate_instructions_vectorized[0], result.key_sizes, key, no_more_keys, overflow_row_ptr);
 
 			if (false) {}
 			APPLY_FOR_AGGREGATED_VARIANTS(M)

@@ -23,6 +23,18 @@ using AggregateDataPtr = char *;
 using ConstAggregateDataPtr = const char *;
 
 
+struct GroupOfStates
+{
+	size_t group_size;
+	AggregateDataPtr state;
+
+	GroupOfStates(size_t group_size_, AggregateDataPtr state_)
+	: group_size(group_size_), state(state_) {}
+};
+
+using StatesList = std::vector<GroupOfStates>;
+
+
 /** Интерфейс для агрегатных функций.
   * Экземпляры классов с этим интерфейсом не содержат самих данных для агрегации,
   *  а содержат лишь метаданные (описание) агрегатной функции,
@@ -116,6 +128,16 @@ public:
 	  */
 	using AddFunc = void (*)(const IAggregateFunction *, AggregateDataPtr, const IColumn **, size_t, Arena *);
 	virtual AddFunc getAddressOfAddFunction() const = 0;
+
+	virtual void addChunks(const IColumn ** columns, StatesList & states, Arena * arena) const
+	{
+		throw Exception("Calling aggragte function doesn't support chunk processing");
+	}
+
+	virtual bool supportsChunks() const
+	{
+		return false;
+	}
 };
 
 

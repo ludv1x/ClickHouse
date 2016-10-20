@@ -899,6 +899,7 @@ void InterpreterSelectQuery::executeAggregation(ExpressionActionsPtr expression,
 		allow_to_use_two_level_group_by ? settings.group_by_two_level_threshold : SettingUInt64(0),
 		allow_to_use_two_level_group_by ? settings.group_by_two_level_threshold_bytes : SettingUInt64(0),
 		settings.limits.max_bytes_before_external_group_by, context.getTemporaryPath());
+	params.use_vectorized_aggregation = settings.use_vectorized_aggregation;
 
 	/// Если источников несколько, то выполняем параллельную агрегацию
 	if (streams.size() > 1)
@@ -953,6 +954,7 @@ void InterpreterSelectQuery::executeMergeAggregated(bool overflow_row, bool fina
 	  */
 
 	Aggregator::Params params(key_names, aggregates, overflow_row);
+	params.use_vectorized_aggregation = settings.use_vectorized_aggregation;
 
 	if (!settings.distributed_aggregation_memory_efficient)
 	{

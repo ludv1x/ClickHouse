@@ -560,6 +560,8 @@ struct AggregatedDataVariants : private boost::noncopyable
 	Arenas aggregates_pools;
 	Arena * aggregates_pool;	/// Пул, который сейчас используется для аллокации.
 
+	StatesList block_states_list;
+
 	/** Специализация для случая, когда ключи отсутствуют, и для ключей, не попавших в max_rows_to_group_by.
 	  */
 	AggregatedDataWithoutKey without_key = nullptr;
@@ -837,6 +839,8 @@ public:
 		const size_t max_bytes_before_external_group_by;		/// 0 - не использовать внешнюю агрегацию.
 		const std::string tmp_path;
 
+		bool use_vectorized_aggregation = false;
+
 		Params(
 			const Names & key_names_, const AggregateDescriptions & aggregates_,
 			bool overflow_row_, size_t max_rows_to_group_by_, OverflowMode group_by_overflow_mode_,
@@ -1037,6 +1041,7 @@ protected:
 		size_t rows,
 		ConstColumnPlainPtrs & key_columns,
 		AggregateFunctionInstruction * aggregate_instructions,
+		AggregateFunctionInstruction * aggregate_instructions_vectorized,
 		const Sizes & key_sizes,
 		StringRefs & keys,
 		bool no_more_keys,
@@ -1051,6 +1056,7 @@ protected:
 		size_t rows,
 		ConstColumnPlainPtrs & key_columns,
 		AggregateFunctionInstruction * aggregate_instructions,
+		AggregateFunctionInstruction * aggregate_instructions_vectorized,
 		const Sizes & key_sizes,
 		StringRefs & keys,
 		AggregateDataPtr overflow_row) const;
@@ -1060,6 +1066,7 @@ protected:
 		AggregatedDataWithoutKey & res,
 		size_t rows,
 		AggregateFunctionInstruction * aggregate_instructions,
+		AggregateFunctionInstruction * aggregate_instructions_vectorized,
 		Arena * arena) const;
 
 	template <typename Method>
