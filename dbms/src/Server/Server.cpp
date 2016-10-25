@@ -510,6 +510,3 @@ int Server::main(const std::vector<std::string> & args)
 }
 
 }
-
-
-YANDEX_APP_SERVER_MAIN(DB::Server);
