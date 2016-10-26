@@ -555,8 +555,6 @@ void NO_INLINE Aggregator::executeImplCase(
 	StringRefs & keys,
 	AggregateDataPtr overflow_row) const
 {
-	/// NOTE При редактировании этого кода, обратите также внимание на SpecializedAggregator.h.
-
 	/// Для всех строчек.
 	typename Method::iterator it;
 	typename Method::Key prev_key;
@@ -644,19 +642,17 @@ void NO_INLINE Aggregator::executeImplCaseVec(
 	AggregateDataPtr overflow_row,
 	InternalStatesList & states) const
 {
-	auto & raw_states = states.raw_states;
-	auto & final_states = states.resolved_states;
-
-	raw_states.clear();
-	raw_states.reserve(rows);
-
-	final_states.clear();
-	final_states.reserve(rows);
+	auto & raw_chunks = states.raw_states;
+	auto & final_chunks = states.resolved_states;
 
 	size_t num_new_keys = 0;
 	size_t cur_group_size = 1;
 
 	BlockOfStates * block_of_states = new (aggregates_pool->alloc(sizeof(BlockOfStates))) BlockOfStates();
+
+	raw_chunks.clear();
+	raw_chunks.reserve(rows);
+	raw_chunks.emplace_back();
 
 	/// Для всех строчек.
 	typename Method::iterator it;
@@ -673,19 +669,19 @@ void NO_INLINE Aggregator::executeImplCaseVec(
 		{
 			if (i != 0 && key == prev_key)
 			{
-				cur_group_size++;
+				++cur_group_size;
 				continue;
 			}
-			else
+			else /// new chunk (group)
 			{
-				if (i > 0)
-				{
-					final_states.back().group_size = cur_group_size;
-				}
+				/// finalize prev chunk
+				raw_chunks.back().group_size = cur_group_size;
 
+				/// initialize new chunk
 				cur_group_size = 1;
-				raw_states.emplace_back(1, nullptr);
+				raw_chunks.emplace_back();
 
+				prev_key = key;
 				method.data.emplace(key, it, inserted);
 			}
 		}
@@ -699,33 +695,56 @@ void NO_INLINE Aggregator::executeImplCaseVec(
 		}
 
 		/// Если ключ не поместился, и данные не надо агрегировать в отдельную строку, то делать нечего.
-// 		if (no_more_keys && overflow && !overflow_row)
-// 		{
-// 			method.onExistingKey(key, keys, *aggregates_pool);
-// 			continue;
-// 		}
+		if (no_more_keys && overflow && !overflow_row)
+		{
+			method.onExistingKey(key, keys, *aggregates_pool);
+			continue;
+		}
 
+		/// new chunk can be in either new group (inserted), either old group
 		if (inserted)
 		{
-			StateInBlock & value = it->second;
+			/// setup pointers for new chunk (both in hash table and our array)
+			StateInBlock & value = Method::getAggregateData(it->second);
 			value.block = block_of_states;
 			value.state_num = num_new_keys;
 
+			raw_chunks.back().state_in_block = value;
+
 			++num_new_keys;
+			method.onNewKey(*it, params.keys_size, i, keys, *aggregates_pool);
 		}
 		else
 		{
-			raw_states.back() = it->second;
+			raw_chunks.back().state_in_block = Method::getAggregateData(it->second);
 			method.onExistingKey(key, keys, *aggregates_pool);
 		}
 	}
 
 	/// Update last state
-	states_list.back().group_size = cur_group_size;
+	raw_chunks.back().group_size = cur_group_size;
 
+	/// Allocate new states
 	if (num_new_keys)
 		block_of_states->init(aggregates_pool, funcs_info, num_new_keys);
 
+	size_t num_chunk_of_keys = raw_chunks.size();
+	final_chunks.resize(num_chunk_of_keys);
+
+	for (size_t j = 0; j < num_chunk_of_keys; j++)
+	{
+		final_chunks[j].group_size = raw_chunks[j].group_size;
+	}
+
+	for (size_t i = 0; i < funcs_info.function_ptrs.size(); i++)
+	{
+		for (size_t j = 0; j < num_chunk_of_keys; j++)
+		{
+			final_chunks[j].state = raw_chunks[j].block->getData(i, raw_chunks[j].state_num);
+		}
+
+		funcs_info.function_ptrs[i]->addChunks(funcs_info.argument_ptrs[i], final_chunks, aggregates_pool);
+	}
 }
 
 #ifndef __clang__
@@ -752,7 +771,7 @@ void NO_INLINE Aggregator::executeWithoutKeyImpl(
 		{
 			for (AggregateFunctionInstruction * inst = aggregate_instructions_vectorized; inst->that; ++inst)
 			{
-				StatesList cur_states_list(1, GroupOfStates(rows, res + inst->state_offset));
+				GroupedStates cur_states_list(1, GroupOfStates(rows, res + inst->state_offset));
 				inst->that->addChunks(inst->arguments, cur_states_list, arena);
 			}
 		}
@@ -833,9 +852,10 @@ bool Aggregator::executeOnBlock(Block & block, AggregatedDataVariants & result,
 	AggregateFunctionsInfo vagg_info;
 	for (auto & inst : aggregate_instructions_vectorized)
 	{
-		vagg_info.function_ptrs.emplace_back(inst.that);
+		vagg_info.function_ptrs.push_back(inst.that);
 		vagg_info.state_sizes.emplace_back(inst.that->sizeOfData());
 		vagg_info.sum_state_sizes += vagg_info.state_sizes.back();
+		vagg_info.argument_ptrs.push_back(inst.arguments);
 	}
 
 	aggregate_instructions_vectorized.emplace_back();
@@ -946,7 +966,7 @@ bool Aggregator::executeOnBlock(Block & block, AggregatedDataVariants & result,
 			#define M(NAME, IS_TWO_LEVEL) \
 				else if (result.type == AggregatedDataVariants::Type::NAME) \
 					executeImplVec(*result.NAME.vectorized, result.aggregates_pool, rows, key_columns,  \
-						vagg_info, result.key_sizes, key, no_more_keys, overflow_row_ptr, result.block_states_list);
+						vagg_info, result.key_sizes, key, no_more_keys, overflow_row_ptr, result.block_states);
 
 				if (false) {}
 				APPLY_FOR_AGGREGATED_VARIANTS(M)

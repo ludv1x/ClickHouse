@@ -87,7 +87,8 @@ using AggregatedDataWithKeys256Hash64 = HashMap<UInt256, AggregateDataPtr, UInt2
 
 struct AggregateFunctionsInfo
 {
-	AggregateFunctionsPlainPtrs function_ptrs;
+	AggregateFunctionsPlainConstPtrs function_ptrs;
+	std::vector<const IColumn **> argument_ptrs;
 	Sizes state_sizes;
 	size_t sum_state_sizes = 0;
 };
@@ -112,7 +113,7 @@ struct BlockOfStates
 		for (size_t i = 0; i < num_aggregates; ++i)
 		{
 			aggregates_states[i] = cur_aggregate_data;
-			info.function_ptrs[i]->createChunk(cur_aggregate_data);
+			info.function_ptrs[i]->createChunk(cur_aggregate_data, num_states);
 			cur_aggregate_data += num_states * aggregates_states_sizes[i];
 		}
 	}
@@ -125,14 +126,29 @@ struct BlockOfStates
 
 struct StateInBlock
 {
+	StateInBlock() = default;
+	StateInBlock(BlockOfStates * block_) : block(block_) {}
+	StateInBlock(BlockOfStates * block_, size_t state_num_) : block(block_), state_num(state_num_) {}
+
 	BlockOfStates * block;
 	size_t state_num;
 };
 
+struct GroupedStateInBlock : public StateInBlock
+{
+	GroupedStateInBlock(BlockOfStates * block, size_t state_num_in_block, size_t group_size_)
+	: state_in_block(block, state_num_in_block), group_size(group_size_) {}
+	GroupedStateInBlock(BlockOfStates * block)
+	: state_in_block(block) {}
+	GroupedStateInBlock() = default;
+
+	StateInBlock state_in_block;
+	size_t group_size = 0;
+};
 
 struct InternalStatesList
 {
-	std::vector<StateInBlock> raw_states;
+	std::vector<GroupedStateInBlock> raw_states;
 	std::vector<GroupOfStates> resolved_states;
 };
 
@@ -159,7 +175,7 @@ using AggregatedDataWithKeys256Hash64V = HashMap<UInt256, StateInBlock, UInt256H
 
 
 /// Для случая, когда есть один числовой ключ.
-template <typename FieldType, typename TData>	/// UInt8/16/32/64 для любых типов соответствующей битности.
+template <typename FieldType, typename TData, typename TValue>	/// UInt8/16/32/64 для любых типов соответствующей битности.
 struct AggregationMethodOneNumber
 {
 	using Data = TData;
@@ -202,8 +218,8 @@ struct AggregationMethodOneNumber
 	};
 
 	/// Из значения в хэш-таблице получить AggregateDataPtr.
-	static AggregateDataPtr & getAggregateData(Mapped & value)				{ return value; }
-	static const AggregateDataPtr & getAggregateData(const Mapped & value)	{ return value; }
+	static TValue & getAggregateData(Mapped & value)				{ return value; }
+	static const TValue & getAggregateData(const Mapped & value)	{ return value; }
 
 	/** Разместить дополнительные данные, если это необходимо, в случае, когда в хэш-таблицу был вставлен новый ключ.
 	  */
@@ -229,7 +245,7 @@ struct AggregationMethodOneNumber
 
 
 /// Для случая, когда есть один строковый ключ.
-template <typename TData>
+template <typename TData, typename TValue = AggregateDataPtr>
 struct AggregationMethodString
 {
 	using Data = TData;
@@ -272,8 +288,8 @@ struct AggregationMethodString
 		}
 	};
 
-	static AggregateDataPtr & getAggregateData(Mapped & value)				{ return value; }
-	static const AggregateDataPtr & getAggregateData(const Mapped & value)	{ return value; }
+	static TValue & getAggregateData(Mapped & value)				{ return value; }
+	static const TValue & getAggregateData(const Mapped & value)	{ return value; }
 
 	static void onNewKey(typename Data::value_type & value, size_t keys_size, size_t i, StringRefs & keys, Arena & pool)
 	{
@@ -292,7 +308,7 @@ struct AggregationMethodString
 
 
 /// Для случая, когда есть один строковый ключ фиксированной длины.
-template <typename TData>
+template <typename TData, typename TValue = AggregateDataPtr>
 struct AggregationMethodFixedString
 {
 	using Data = TData;
@@ -333,8 +349,8 @@ struct AggregationMethodFixedString
 		}
 	};
 
-	static AggregateDataPtr & getAggregateData(Mapped & value)				{ return value; }
-	static const AggregateDataPtr & getAggregateData(const Mapped & value)	{ return value; }
+	static TValue & getAggregateData(Mapped & value)				{ return value; }
+	static const TValue & getAggregateData(const Mapped & value)	{ return value; }
 
 	static void onNewKey(typename Data::value_type & value, size_t keys_size, size_t i, StringRefs & keys, Arena & pool)
 	{
@@ -353,7 +369,7 @@ struct AggregationMethodFixedString
 
 
 /// Для случая, когда все ключи фиксированной длины, и они помещаются в N (например, 128) бит.
-template <typename TData>
+template <typename TData, typename TValue = AggregateDataPtr>
 struct AggregationMethodKeysFixed
 {
 	using Data = TData;
@@ -387,8 +403,8 @@ struct AggregationMethodKeysFixed
 		}
 	};
 
-	static AggregateDataPtr & getAggregateData(Mapped & value)				{ return value; }
-	static const AggregateDataPtr & getAggregateData(const Mapped & value)	{ return value; }
+	static TValue & getAggregateData(Mapped & value)				{ return value; }
+	static const TValue & getAggregateData(const Mapped & value)	{ return value; }
 
 	static void onNewKey(typename Data::value_type & value, size_t keys_size, size_t i, StringRefs & keys, Arena & pool)
 	{
@@ -412,7 +428,7 @@ struct AggregationMethodKeysFixed
 
 
 /// Агрегирует по конкатенации ключей. (При этом, строки, содержащие нули посередине, могут склеиться.)
-template <typename TData>
+template <typename TData, typename TValue = AggregateDataPtr>
 struct AggregationMethodConcat
 {
 	using Data = TData;
@@ -446,8 +462,8 @@ struct AggregationMethodConcat
 		}
 	};
 
-	static AggregateDataPtr & getAggregateData(Mapped & value)				{ return value; }
-	static const AggregateDataPtr & getAggregateData(const Mapped & value)	{ return value; }
+	static TValue & getAggregateData(Mapped & value)				{ return value; }
+	static const TValue & getAggregateData(const Mapped & value)	{ return value; }
 
 	static void onNewKey(typename Data::value_type & value, size_t keys_size, size_t i, StringRefs & keys, Arena & pool)
 	{
@@ -490,7 +506,7 @@ struct AggregationMethodConcat
   * То есть, например, для строк, оно содержит сначала сериализованную длину строки, а потом байты.
   * Поэтому, при агрегации по нескольким строкам, неоднозначностей не возникает.
   */
-template <typename TData>
+template <typename TData, typename TValue = AggregateDataPtr>
 struct AggregationMethodSerialized
 {
 	using Data = TData;
@@ -524,8 +540,8 @@ struct AggregationMethodSerialized
 		}
 	};
 
-	static AggregateDataPtr & getAggregateData(Mapped & value)				{ return value; }
-	static const AggregateDataPtr & getAggregateData(const Mapped & value)	{ return value; }
+	static TValue & getAggregateData(Mapped & value)				{ return value; }
+	static const TValue & getAggregateData(const Mapped & value)	{ return value; }
 
 	static void onNewKey(typename Data::value_type & value, size_t keys_size, size_t i, StringRefs & keys, Arena & pool)
 	{
@@ -549,7 +565,7 @@ struct AggregationMethodSerialized
 
 
 /// Для остальных случаев. Агрегирует по 128 битному хэшу от ключа. (При этом, строки, содержащие нули посередине, могут склеиться.)
-template <typename TData>
+template <typename TData, typename TValue = AggregateDataPtr>
 struct AggregationMethodHashed
 {
 	using Data = TData;
@@ -583,8 +599,8 @@ struct AggregationMethodHashed
 		}
 	};
 
-	static AggregateDataPtr & getAggregateData(Mapped & value)				{ return value.second; }
-	static const AggregateDataPtr & getAggregateData(const Mapped & value)	{ return value.second; }
+	static TValue & getAggregateData(Mapped & value)				{ return value.second; }
+	static const TValue & getAggregateData(const Mapped & value)	{ return value.second; }
 
 	static void onNewKey(typename Data::value_type & value, size_t keys_size, size_t i, StringRefs & keys, Arena & pool)
 	{
@@ -678,10 +694,10 @@ struct AggregatedDataVariants : private boost::noncopyable
 	};
 
 #define METHOD_2PTR(Method, CommonArg, VarArg)\
-	MethodTwoCasePtr<Method<CommonArg, VarArg>, Method<CommonArg, VarArg##V>>
+	MethodTwoCasePtr<Method<CommonArg, VarArg, AggregateDataPtr>, Method<CommonArg, VarArg##V, StateInBlock>>
 
 #define METHOD_2PTR_(Method, VarArg)\
-	MethodTwoCasePtr<Method<VarArg>, Method<VarArg##V>>
+	MethodTwoCasePtr<Method<VarArg, AggregateDataPtr>, Method<VarArg##V, StateInBlock>>
 
 // 	std::unique_ptr<AggregationMethodOneNumber<UInt8, AggregatedDataWithUInt8Key>>			key8;
 // 	std::unique_ptr<AggregationMethodOneNumber<UInt16, AggregatedDataWithUInt16Key>>		key16;
@@ -1029,6 +1045,7 @@ public:
 
 	using AggregateColumns = std::vector<ConstColumnPlainPtrs>;
 	using AggregateColumnsData = std::vector<ColumnAggregateFunction::Container_t *>;
+	using AggregateFunctionsPlainPtrs = std::vector<IAggregateFunction *>;
 
 	/// Обработать один блок. Вернуть false, если обработку следует прервать (при group_by_overflow_mode = 'break').
 	bool executeOnBlock(Block & block, AggregatedDataVariants & result,

@@ -25,11 +25,13 @@ template <typename T>
 class AggregateFunctionSum final : public IUnaryAggregateFunction<AggregateFunctionSumData<typename NearestFieldType<T>::Type>, AggregateFunctionSum<T> >
 {
 public:
+	using WorkType = typename NearestFieldType<T>::Type;
+
 	String getName() const override { return "sum"; }
 
 	DataTypePtr getReturnType() const override
 	{
-		return std::make_shared<typename DataTypeFromFieldType<typename NearestFieldType<T>::Type>::Type>();
+		return std::make_shared<typename DataTypeFromFieldType<WorkType>::Type>();
 	}
 
 	void setArgument(const DataTypePtr & argument)
@@ -72,18 +74,32 @@ public:
 		return true;
 	}
 
-	void addChunks(const IColumn ** columns, StatesList & states, Arena * arena) const override
+	void addChunks(const IColumn ** columns, GroupedStates & states, Arena * arena) const override
 	{
 		const T * column_data = &static_cast<const ColumnVector<T> &>(*columns[0]).getData()[0];
 
 		size_t i = 0;
-		for (size_t group_num = 0; group_num < states.size(); group_num++)
+		for (size_t chunk_num = 0; chunk_num < states.size(); chunk_num++)
 		{
-			Data & state_data = *reinterpret_cast<Data *>(states[group_num].state);
-			size_t group_end = i + states[group_num].group_size;
+			Data & state_data = *reinterpret_cast<Data *>(states[chunk_num].state);
+			size_t chunk_end = i + states[chunk_num].group_size;
 
-			for (; i < group_end; ++i)
-				state_data.sum += column_data[i];
+			WorkType partial_sum(0); // Hint to compiler
+
+			for (; i < chunk_end; ++i)
+				partial_sum += column_data[i];
+			state_data.sum += partial_sum;
+		}
+	}
+
+	void createChunk(AggregateDataPtr first_elem, size_t num_elems) const override
+	{
+		Data * states = reinterpret_cast<Data *>(first_elem);
+
+		for (size_t i = 0; i < num_elems; i++)
+		{
+			new (states) Data;
+			++states;
 		}
 	}
 };

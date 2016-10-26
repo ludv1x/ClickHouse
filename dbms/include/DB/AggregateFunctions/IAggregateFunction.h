@@ -28,7 +28,7 @@ struct GroupOfStates
 	size_t group_size;
 	AggregateDataPtr state;
 
-	GroupOfStates(size_t group_size_, AggregateDataPtr state_)
+	GroupOfStates(size_t group_size_ = 0, AggregateDataPtr state_ = nullptr)
 	: group_size(group_size_), state(state_) {}
 };
 
@@ -134,7 +134,7 @@ public:
 		throw Exception("Calling aggragte function doesn't support chunk processing");
 	}
 
-	virtual void createChunk(AggregateDataPtr first_place) const
+	virtual void createChunk(AggregateDataPtr first_place, size_t num_elems) const
 	{
 		throw Exception("Calling aggragte function doesn't support chunk processing");
 	}
@@ -187,5 +187,6 @@ public:
 
 using AggregateFunctionPtr = std::shared_ptr<IAggregateFunction>;
 using AggregateFunctionsPlainPtrs = std::vector<IAggregateFunction *>;
+using AggregateFunctionsPlainConstPtrs = std::vector<const IAggregateFunction *>;
 
 }
