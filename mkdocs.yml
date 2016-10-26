@@ -1,0 +1,19 @@
+site_name: ClickHouse
+#site_url: https://clickhouse.yandex/
+#repo_url: https://github.com/yandex/ClickHouse
+site_favicon: https://clickhouse.yandex/favicon.ico
+
+theme_dir: readthedocshm
+#theme: material
+docs_dir: 'doc/'
+
+pages:
+    - 'Test': 'test.md'
+    #- 'Reference (ru) rst': 'reference_ru.rst'
+    - 'Reference (ru)': 'reference_ru.md'
+    - 'How to build': 'build.md'
+    - 'Developers style guide (ru)': 'style_ru.md'
+
+markdown_extensions:
+  - smarty
+  - toc
