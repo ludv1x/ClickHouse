@@ -32,7 +32,7 @@ struct GroupOfStates
 	: group_size(group_size_), state(state_) {}
 };
 
-using StatesList = std::vector<GroupOfStates>;
+using GroupedStates = std::vector<GroupOfStates>;
 
 
 /** Интерфейс для агрегатных функций.
@@ -129,7 +129,12 @@ public:
 	using AddFunc = void (*)(const IAggregateFunction *, AggregateDataPtr, const IColumn **, size_t, Arena *);
 	virtual AddFunc getAddressOfAddFunction() const = 0;
 
-	virtual void addChunks(const IColumn ** columns, StatesList & states, Arena * arena) const
+	virtual void addChunks(const IColumn ** columns, GroupedStates & states, Arena * arena) const
+	{
+		throw Exception("Calling aggragte function doesn't support chunk processing");
+	}
+
+	virtual void createChunk(AggregateDataPtr first_place) const
 	{
 		throw Exception("Calling aggragte function doesn't support chunk processing");
 	}
@@ -181,5 +186,6 @@ public:
 
 
 using AggregateFunctionPtr = std::shared_ptr<IAggregateFunction>;
+using AggregateFunctionsPlainPtrs = std::vector<IAggregateFunction *>;
 
 }

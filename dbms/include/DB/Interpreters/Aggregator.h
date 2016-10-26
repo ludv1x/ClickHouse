@@ -85,6 +85,79 @@ using AggregatedDataWithKeys128Hash64 = HashMap<UInt128, AggregateDataPtr, UInt1
 using AggregatedDataWithKeys256Hash64 = HashMap<UInt256, AggregateDataPtr, UInt256Hash>;
 
 
+struct AggregateFunctionsInfo
+{
+	AggregateFunctionsPlainPtrs function_ptrs;
+	Sizes state_sizes;
+	size_t sum_state_sizes = 0;
+};
+
+struct BlockOfStates
+{
+	AggregateDataPtr * aggregates_states = nullptr;
+	size_t * aggregates_states_sizes = nullptr;
+
+	void init(Arena * arena, AggregateFunctionsInfo & info, size_t num_states)
+	{
+		aggregates_states_sizes = info.state_sizes.data();
+
+		size_t size_for_states = info.sum_state_sizes * num_states;
+		size_t num_aggregates = info.function_ptrs.size();
+		size_t size_total = size_for_states + num_aggregates * sizeof(AggregateDataPtr);
+
+		char * data = arena->alloc(size_total);
+		aggregates_states = reinterpret_cast<AggregateDataPtr *>(data + size_for_states);
+
+		char * cur_aggregate_data = data;
+		for (size_t i = 0; i < num_aggregates; ++i)
+		{
+			aggregates_states[i] = cur_aggregate_data;
+			info.function_ptrs[i]->createChunk(cur_aggregate_data);
+			cur_aggregate_data += num_states * aggregates_states_sizes[i];
+		}
+	}
+
+	AggregateDataPtr getData(size_t num_state, size_t num_aggregate)
+	{
+		return aggregates_states[num_aggregate] + num_state * aggregates_states_sizes[num_aggregate];
+	}
+};
+
+struct StateInBlock
+{
+	BlockOfStates * block;
+	size_t state_num;
+};
+
+
+struct InternalStatesList
+{
+	std::vector<StateInBlock> raw_states;
+	std::vector<GroupOfStates> resolved_states;
+};
+
+/// Vectorized variants
+using AggregatedDataWithUInt8KeyV = HashMap<UInt64, StateInBlock, TrivialHash, HashTableFixedGrower<8>>;
+using AggregatedDataWithUInt16KeyV = HashMap<UInt64, StateInBlock, TrivialHash, HashTableFixedGrower<16>>;
+
+using AggregatedDataWithUInt64KeyV = HashMap<UInt64, StateInBlock, HashCRC32<UInt64>>;
+using AggregatedDataWithStringKeyV = HashMapWithSavedHash<StringRef, StateInBlock>;
+using AggregatedDataWithKeys128V = HashMap<UInt128, StateInBlock, UInt128HashCRC32>;
+using AggregatedDataWithKeys256V = HashMap<UInt256, StateInBlock, UInt256HashCRC32>;
+using AggregatedDataHashedV = HashMap<UInt128, std::pair<StringRef*, StateInBlock>, UInt128TrivialHash>;
+
+using AggregatedDataWithUInt64KeyTwoLevelV = TwoLevelHashMap<UInt64, StateInBlock, HashCRC32<UInt64>>;
+using AggregatedDataWithStringKeyTwoLevelV = TwoLevelHashMapWithSavedHash<StringRef, StateInBlock>;
+using AggregatedDataWithKeys128TwoLevelV = TwoLevelHashMap<UInt128, StateInBlock, UInt128HashCRC32>;
+using AggregatedDataWithKeys256TwoLevelV = TwoLevelHashMap<UInt256, StateInBlock, UInt256HashCRC32>;
+using AggregatedDataHashedTwoLevelV = TwoLevelHashMap<UInt128, std::pair<StringRef*, StateInBlock>, UInt128TrivialHash>;
+
+using AggregatedDataWithUInt64KeyHash64V = HashMap<UInt64, StateInBlock, DefaultHash<UInt64>>;
+using AggregatedDataWithStringKeyHash64V = HashMapWithSavedHash<StringRef, StateInBlock, StringRefHash64>;
+using AggregatedDataWithKeys128Hash64V = HashMap<UInt128, StateInBlock, UInt128Hash>;
+using AggregatedDataWithKeys256Hash64V = HashMap<UInt256, StateInBlock, UInt256Hash>;
+
+
 /// Для случая, когда есть один числовой ключ.
 template <typename FieldType, typename TData>	/// UInt8/16/32/64 для любых типов соответствующей битности.
 struct AggregationMethodOneNumber
@@ -560,42 +633,117 @@ struct AggregatedDataVariants : private boost::noncopyable
 	Arenas aggregates_pools;
 	Arena * aggregates_pool;	/// Пул, который сейчас используется для аллокации.
 
-	StatesList block_states_list;
+	InternalStatesList block_states;
 
 	/** Специализация для случая, когда ключи отсутствуют, и для ключей, не попавших в max_rows_to_group_by.
 	  */
 	AggregatedDataWithoutKey without_key = nullptr;
 
-	std::unique_ptr<AggregationMethodOneNumber<UInt8, AggregatedDataWithUInt8Key>>			key8;
-	std::unique_ptr<AggregationMethodOneNumber<UInt16, AggregatedDataWithUInt16Key>>		key16;
 
-	std::unique_ptr<AggregationMethodOneNumber<UInt32, AggregatedDataWithUInt64Key>>		key32;
-	std::unique_ptr<AggregationMethodOneNumber<UInt64, AggregatedDataWithUInt64Key>>		key64;
-	std::unique_ptr<AggregationMethodString<AggregatedDataWithStringKey>>					key_string;
-	std::unique_ptr<AggregationMethodFixedString<AggregatedDataWithStringKey>>				key_fixed_string;
-	std::unique_ptr<AggregationMethodKeysFixed<AggregatedDataWithKeys128>>					keys128;
-	std::unique_ptr<AggregationMethodKeysFixed<AggregatedDataWithKeys256>>					keys256;
-	std::unique_ptr<AggregationMethodHashed<AggregatedDataHashed>>							hashed;
-	std::unique_ptr<AggregationMethodConcat<AggregatedDataWithStringKey>>					concat;
-	std::unique_ptr<AggregationMethodSerialized<AggregatedDataWithStringKey>>				serialized;
+	template<typename T1, typename T2>
+	struct MethodTwoCasePtr
+	{
+		std::unique_ptr<T1> ordinary;
+		std::unique_ptr<T2> vectorized;
 
-	std::unique_ptr<AggregationMethodOneNumber<UInt32, AggregatedDataWithUInt64KeyTwoLevel>>	key32_two_level;
-	std::unique_ptr<AggregationMethodOneNumber<UInt64, AggregatedDataWithUInt64KeyTwoLevel>>	key64_two_level;
-	std::unique_ptr<AggregationMethodString<AggregatedDataWithStringKeyTwoLevel>>				key_string_two_level;
-	std::unique_ptr<AggregationMethodFixedString<AggregatedDataWithStringKeyTwoLevel>>			key_fixed_string_two_level;
-	std::unique_ptr<AggregationMethodKeysFixed<AggregatedDataWithKeys128TwoLevel>>				keys128_two_level;
-	std::unique_ptr<AggregationMethodKeysFixed<AggregatedDataWithKeys256TwoLevel>>				keys256_two_level;
-	std::unique_ptr<AggregationMethodHashed<AggregatedDataHashedTwoLevel>>						hashed_two_level;
-	std::unique_ptr<AggregationMethodConcat<AggregatedDataWithStringKeyTwoLevel>>				concat_two_level;
-	std::unique_ptr<AggregationMethodSerialized<AggregatedDataWithStringKeyTwoLevel>>			serialized_two_level;
+		T1 * operator -> ()
+		{
+			return ordinary.get();
+		}
 
-	std::unique_ptr<AggregationMethodOneNumber<UInt64, AggregatedDataWithUInt64KeyHash64>>	key64_hash64;
-	std::unique_ptr<AggregationMethodString<AggregatedDataWithStringKeyHash64>> 			key_string_hash64;
-	std::unique_ptr<AggregationMethodFixedString<AggregatedDataWithStringKeyHash64>> 		key_fixed_string_hash64;
-	std::unique_ptr<AggregationMethodKeysFixed<AggregatedDataWithKeys128Hash64>> 			keys128_hash64;
-	std::unique_ptr<AggregationMethodKeysFixed<AggregatedDataWithKeys256Hash64>> 			keys256_hash64;
-	std::unique_ptr<AggregationMethodConcat<AggregatedDataWithStringKeyHash64>> 			concat_hash64;
-	std::unique_ptr<AggregationMethodSerialized<AggregatedDataWithStringKeyHash64>> 		serialized_hash64;
+		const T1 * operator -> () const
+		{
+			return ordinary.get();
+		}
+
+		T1 & operator * ()
+		{
+			return *ordinary;
+		}
+
+		const T1 & operator * () const
+		{
+			return *ordinary;
+		}
+
+		void reset()
+		{
+			ordinary.reset();
+			vectorized.reset();
+		}
+
+		using element_type = T1;
+		using ordinary_type = T1;
+		using vectorized_type = T2;
+	};
+
+#define METHOD_2PTR(Method, CommonArg, VarArg)\
+	MethodTwoCasePtr<Method<CommonArg, VarArg>, Method<CommonArg, VarArg##V>>
+
+#define METHOD_2PTR_(Method, VarArg)\
+	MethodTwoCasePtr<Method<VarArg>, Method<VarArg##V>>
+
+// 	std::unique_ptr<AggregationMethodOneNumber<UInt8, AggregatedDataWithUInt8Key>>			key8;
+// 	std::unique_ptr<AggregationMethodOneNumber<UInt16, AggregatedDataWithUInt16Key>>		key16;
+//
+// 	std::unique_ptr<AggregationMethodOneNumber<UInt32, AggregatedDataWithUInt64Key>>		key32;
+// 	std::unique_ptr<AggregationMethodOneNumber<UInt64, AggregatedDataWithUInt64Key>>		key64;
+// 	std::unique_ptr<AggregationMethodString<AggregatedDataWithStringKey>>					key_string;
+// 	std::unique_ptr<AggregationMethodFixedString<AggregatedDataWithStringKey>>				key_fixed_string;
+// 	std::unique_ptr<AggregationMethodKeysFixed<AggregatedDataWithKeys128>>					keys128;
+// 	std::unique_ptr<AggregationMethodKeysFixed<AggregatedDataWithKeys256>>					keys256;
+// 	std::unique_ptr<AggregationMethodHashed<AggregatedDataHashed>>							hashed;
+// 	std::unique_ptr<AggregationMethodConcat<AggregatedDataWithStringKey>>					concat;
+// 	std::unique_ptr<AggregationMethodSerialized<AggregatedDataWithStringKey>>				serialized;
+//
+// 	std::unique_ptr<AggregationMethodOneNumber<UInt32, AggregatedDataWithUInt64KeyTwoLevel>>	key32_two_level;
+// 	std::unique_ptr<AggregationMethodOneNumber<UInt64, AggregatedDataWithUInt64KeyTwoLevel>>	key64_two_level;
+// 	std::unique_ptr<AggregationMethodString<AggregatedDataWithStringKeyTwoLevel>>				key_string_two_level;
+// 	std::unique_ptr<AggregationMethodFixedString<AggregatedDataWithStringKeyTwoLevel>>			key_fixed_string_two_level;
+// 	std::unique_ptr<AggregationMethodKeysFixed<AggregatedDataWithKeys128TwoLevel>>				keys128_two_level;
+// 	std::unique_ptr<AggregationMethodKeysFixed<AggregatedDataWithKeys256TwoLevel>>				keys256_two_level;
+// 	std::unique_ptr<AggregationMethodHashed<AggregatedDataHashedTwoLevel>>						hashed_two_level;
+// 	std::unique_ptr<AggregationMethodConcat<AggregatedDataWithStringKeyTwoLevel>>				concat_two_level;
+// 	std::unique_ptr<AggregationMethodSerialized<AggregatedDataWithStringKeyTwoLevel>>			serialized_two_level;
+//
+// 	std::unique_ptr<AggregationMethodOneNumber<UInt64, AggregatedDataWithUInt64KeyHash64>>	key64_hash64;
+// 	std::unique_ptr<AggregationMethodString<AggregatedDataWithStringKeyHash64>> 			key_string_hash64;
+// 	std::unique_ptr<AggregationMethodFixedString<AggregatedDataWithStringKeyHash64>> 		key_fixed_string_hash64;
+// 	std::unique_ptr<AggregationMethodKeysFixed<AggregatedDataWithKeys128Hash64>> 			keys128_hash64;
+// 	std::unique_ptr<AggregationMethodKeysFixed<AggregatedDataWithKeys256Hash64>> 			keys256_hash64;
+// 	std::unique_ptr<AggregationMethodConcat<AggregatedDataWithStringKeyHash64>> 			concat_hash64;
+// 	std::unique_ptr<AggregationMethodSerialized<AggregatedDataWithStringKeyHash64>> 		serialized_hash64;
+
+	METHOD_2PTR(AggregationMethodOneNumber, UInt8, AggregatedDataWithUInt8Key)			key8;
+	METHOD_2PTR(AggregationMethodOneNumber, UInt16, AggregatedDataWithUInt16Key)		key16;
+
+	METHOD_2PTR(AggregationMethodOneNumber, UInt32, AggregatedDataWithUInt64Key)		key32;
+	METHOD_2PTR(AggregationMethodOneNumber, UInt64, AggregatedDataWithUInt64Key)		key64;
+	METHOD_2PTR_(AggregationMethodString, AggregatedDataWithStringKey)					key_string;
+	METHOD_2PTR_(AggregationMethodFixedString, AggregatedDataWithStringKey)				key_fixed_string;
+	METHOD_2PTR_(AggregationMethodKeysFixed, AggregatedDataWithKeys128)					keys128;
+	METHOD_2PTR_(AggregationMethodKeysFixed, AggregatedDataWithKeys256)					keys256;
+	METHOD_2PTR_(AggregationMethodHashed, AggregatedDataHashed)							hashed;
+	METHOD_2PTR_(AggregationMethodConcat, AggregatedDataWithStringKey)					concat;
+	METHOD_2PTR_(AggregationMethodSerialized, AggregatedDataWithStringKey)				serialized;
+
+	METHOD_2PTR(AggregationMethodOneNumber, UInt32, AggregatedDataWithUInt64KeyTwoLevel)	key32_two_level;
+	METHOD_2PTR(AggregationMethodOneNumber, UInt64, AggregatedDataWithUInt64KeyTwoLevel)	key64_two_level;
+	METHOD_2PTR_(AggregationMethodString, AggregatedDataWithStringKeyTwoLevel)				key_string_two_level;
+	METHOD_2PTR_(AggregationMethodFixedString, AggregatedDataWithStringKeyTwoLevel)			key_fixed_string_two_level;
+	METHOD_2PTR_(AggregationMethodKeysFixed, AggregatedDataWithKeys128TwoLevel)				keys128_two_level;
+	METHOD_2PTR_(AggregationMethodKeysFixed, AggregatedDataWithKeys256TwoLevel)				keys256_two_level;
+	METHOD_2PTR_(AggregationMethodHashed, AggregatedDataHashedTwoLevel)						hashed_two_level;
+	METHOD_2PTR_(AggregationMethodConcat, AggregatedDataWithStringKeyTwoLevel)				concat_two_level;
+	METHOD_2PTR_(AggregationMethodSerialized, AggregatedDataWithStringKeyTwoLevel)			serialized_two_level;
+
+	METHOD_2PTR(AggregationMethodOneNumber, UInt64, AggregatedDataWithUInt64KeyHash64)	key64_hash64;
+	METHOD_2PTR_(AggregationMethodString, AggregatedDataWithStringKeyHash64) 			key_string_hash64;
+	METHOD_2PTR_(AggregationMethodFixedString, AggregatedDataWithStringKeyHash64) 		key_fixed_string_hash64;
+	METHOD_2PTR_(AggregationMethodKeysFixed, AggregatedDataWithKeys128Hash64) 			keys128_hash64;
+	METHOD_2PTR_(AggregationMethodKeysFixed, AggregatedDataWithKeys256Hash64) 			keys256_hash64;
+	METHOD_2PTR_(AggregationMethodConcat, AggregatedDataWithStringKeyHash64) 			concat_hash64;
+	METHOD_2PTR_(AggregationMethodSerialized, AggregatedDataWithStringKeyHash64) 		serialized_hash64;
 
 	/// В этом и подобных макросах, вариант without_key не учитывается.
 	#define APPLY_FOR_AGGREGATED_VARIANTS(M) \
@@ -652,7 +800,11 @@ struct AggregatedDataVariants : private boost::noncopyable
 			case Type::without_key:	break;
 
 		#define M(NAME, IS_TWO_LEVEL) \
-			case Type::NAME: NAME = std::make_unique<decltype(NAME)::element_type>(); break;
+			case Type::NAME: \
+				NAME.ordinary = std::make_unique<decltype(NAME)::ordinary_type>();\
+				NAME.vectorized = std::make_unique<decltype(NAME)::vectorized_type>();\
+				break;
+			//case Type::NAME: NAME = std::make_unique<decltype(NAME)::element_type>(); break;
 			APPLY_FOR_AGGREGATED_VARIANTS(M)
 		#undef M
 
@@ -877,7 +1029,6 @@ public:
 
 	using AggregateColumns = std::vector<ConstColumnPlainPtrs>;
 	using AggregateColumnsData = std::vector<ColumnAggregateFunction::Container_t *>;
-	using AggregateFunctionsPlainPtrs = std::vector<IAggregateFunction *>;
 
 	/// Обработать один блок. Вернуть false, если обработку следует прервать (при group_by_overflow_mode = 'break').
 	bool executeOnBlock(Block & block, AggregatedDataVariants & result,
@@ -967,6 +1118,8 @@ protected:
 		const IColumn ** arguments;
 	};
 
+public:
+
 	using AggregateFunctionInstructions = std::vector<AggregateFunctionInstruction>;
 
 	Sizes offsets_of_aggregate_states;	/// Смещение до n-ой агрегатной функции в строке из агрегатных функций.
@@ -1041,7 +1194,6 @@ protected:
 		size_t rows,
 		ConstColumnPlainPtrs & key_columns,
 		AggregateFunctionInstruction * aggregate_instructions,
-		AggregateFunctionInstruction * aggregate_instructions_vectorized,
 		const Sizes & key_sizes,
 		StringRefs & keys,
 		bool no_more_keys,
@@ -1056,10 +1208,35 @@ protected:
 		size_t rows,
 		ConstColumnPlainPtrs & key_columns,
 		AggregateFunctionInstruction * aggregate_instructions,
-		AggregateFunctionInstruction * aggregate_instructions_vectorized,
 		const Sizes & key_sizes,
 		StringRefs & keys,
 		AggregateDataPtr overflow_row) const;
+
+	template <typename Method>
+	void executeImplVec(
+		Method & method,
+		Arena * aggregates_pool,
+		size_t rows,
+		ConstColumnPlainPtrs & key_columns,
+		AggregateFunctionsInfo & funcs_info,
+		const Sizes & key_sizes,
+		StringRefs & keys,
+		bool no_more_keys,
+		AggregateDataPtr overflow_row,
+		InternalStatesList & states) const;
+
+	template <bool no_more_keys, typename Method>
+	void executeImplCaseVec(
+		Method & method,
+		typename Method::State & state,
+		Arena * aggregates_pool,
+		size_t rows,
+		ConstColumnPlainPtrs & key_columns,
+		AggregateFunctionsInfo & funcs_info,
+		const Sizes & key_sizes,
+		StringRefs & keys,
+		AggregateDataPtr overflow_row,
+		InternalStatesList & states) const;
 
 	/// Для случая, когда нет ключей (всё агрегировать в одну строку).
 	void executeWithoutKeyImpl(

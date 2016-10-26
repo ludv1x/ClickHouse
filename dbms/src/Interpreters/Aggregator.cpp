@@ -71,11 +71,13 @@ void AggregatedDataVariants::convertToTwoLevel()
 	{
 	#define M(NAME) \
 		case Type::NAME: \
-			NAME ## _two_level = std::make_unique<decltype(NAME ## _two_level)::element_type>(*NAME); \
+			if (NAME.ordinary) NAME ## _two_level.ordinary = std::make_unique<decltype(NAME ## _two_level)::ordinary_type>(*NAME); \
+			if (NAME.vectorized) NAME ## _two_level.vectorized = std::make_unique<decltype(NAME ## _two_level)::vectorized_type>(*NAME.vectorized); \
 			NAME.reset(); \
 			type = Type::NAME ## _two_level; \
 			break;
 
+			// NAME ## _two_level = std::make_unique<decltype(NAME ## _two_level)::element_type>(*NAME);
 		APPLY_FOR_VARIANTS_CONVERTIBLE_TO_TWO_LEVEL(M)
 
 	#undef M
@@ -496,7 +498,6 @@ void NO_INLINE Aggregator::executeImpl(
 	size_t rows,
 	ConstColumnPlainPtrs & key_columns,
 	AggregateFunctionInstruction * aggregate_instructions,
-	AggregateFunctionInstruction * aggregate_instructions_vectorized,
 	const Sizes & key_sizes,
 	StringRefs & keys,
 	bool no_more_keys,
@@ -507,10 +508,34 @@ void NO_INLINE Aggregator::executeImpl(
 
 	if (!no_more_keys)
 		executeImplCase<false>(method, state, aggregates_pool, rows, key_columns, aggregate_instructions,
-							   aggregate_instructions_vectorized, key_sizes, keys, overflow_row);
+							   key_sizes, keys, overflow_row);
 	else
 		executeImplCase<true>(method, state, aggregates_pool, rows, key_columns, aggregate_instructions,
-							  aggregate_instructions_vectorized, key_sizes, keys, overflow_row);
+							  key_sizes, keys, overflow_row);
+}
+
+template <typename Method>
+void NO_INLINE Aggregator::executeImplVec(
+	Method & method,
+	Arena * aggregates_pool,
+	size_t rows,
+	ConstColumnPlainPtrs & key_columns,
+	AggregateFunctionsInfo & funcs_info,
+	const Sizes & key_sizes,
+	StringRefs & keys,
+	bool no_more_keys,
+	AggregateDataPtr overflow_row,
+	InternalStatesList & states) const
+{
+	typename Method::State state;
+	state.init(key_columns);
+
+	if (!no_more_keys)
+		executeImplCaseVec<false>(method, state, aggregates_pool, rows, key_columns, funcs_info,
+							   key_sizes, keys, overflow_row, states);
+	else
+		executeImplCaseVec<true>(method, state, aggregates_pool, rows, key_columns, funcs_info,
+							  key_sizes, keys, overflow_row, states);
 }
 
 #ifndef __clang__
@@ -526,7 +551,6 @@ void NO_INLINE Aggregator::executeImplCase(
 	size_t rows,
 	ConstColumnPlainPtrs & key_columns,
 	AggregateFunctionInstruction * aggregate_instructions,
-	AggregateFunctionInstruction * aggregate_instructions_vectorized,
 	const Sizes & key_sizes,
 	StringRefs & keys,
 	AggregateDataPtr overflow_row) const
@@ -604,6 +628,104 @@ void NO_INLINE Aggregator::executeImplCase(
 		for (AggregateFunctionInstruction * inst = aggregate_instructions; inst->that; ++inst)
 			(*inst->func)(inst->that, value + inst->state_offset, inst->arguments, i, aggregates_pool);
 	}
+}
+
+
+template <bool no_more_keys, typename Method>
+void NO_INLINE Aggregator::executeImplCaseVec(
+	Method & method,
+	typename Method::State & state,
+	Arena * aggregates_pool,
+	size_t rows,
+	ConstColumnPlainPtrs & key_columns,
+	AggregateFunctionsInfo & funcs_info,
+	const Sizes & key_sizes,
+	StringRefs & keys,
+	AggregateDataPtr overflow_row,
+	InternalStatesList & states) const
+{
+	auto & raw_states = states.raw_states;
+	auto & final_states = states.resolved_states;
+
+	raw_states.clear();
+	raw_states.reserve(rows);
+
+	final_states.clear();
+	final_states.reserve(rows);
+
+	size_t num_new_keys = 0;
+	size_t cur_group_size = 1;
+
+	BlockOfStates * block_of_states = new (aggregates_pool->alloc(sizeof(BlockOfStates))) BlockOfStates();
+
+	/// Для всех строчек.
+	typename Method::iterator it;
+	typename Method::Key prev_key;
+	for (size_t i = 0; i < rows; ++i)
+	{
+		bool inserted;			/// Вставили новый ключ, или такой ключ уже был?
+		bool overflow = false;	/// Новый ключ не поместился в хэш-таблицу из-за no_more_keys.
+
+		/// Получаем ключ для вставки в хэш-таблицу.
+		typename Method::Key key = state.getKey(key_columns, params.keys_size, i, key_sizes, keys, *aggregates_pool);
+
+		if (!no_more_keys)	/// Вставляем.
+		{
+			if (i != 0 && key == prev_key)
+			{
+				cur_group_size++;
+				continue;
+			}
+			else
+			{
+				if (i > 0)
+				{
+					final_states.back().group_size = cur_group_size;
+				}
+
+				cur_group_size = 1;
+				raw_states.emplace_back(1, nullptr);
+
+				method.data.emplace(key, it, inserted);
+			}
+		}
+		else
+		{
+			/// Будем добавлять только если ключ уже есть.
+			inserted = false;
+			it = method.data.find(key);
+			if (method.data.end() == it)
+				overflow = true;
+		}
+
+		/// Если ключ не поместился, и данные не надо агрегировать в отдельную строку, то делать нечего.
+// 		if (no_more_keys && overflow && !overflow_row)
+// 		{
+// 			method.onExistingKey(key, keys, *aggregates_pool);
+// 			continue;
+// 		}
+
+		if (inserted)
+		{
+			StateInBlock & value = it->second;
+			value.block = block_of_states;
+			value.state_num = num_new_keys;
+
+			++num_new_keys;
+		}
+		else
+		{
+			raw_states.back() = it->second;
+			method.onExistingKey(key, keys, *aggregates_pool);
+		}
+	}
+
+	/// Update last state
+	states_list.back().group_size = cur_group_size;
+
+	if (num_new_keys)
+		block_of_states->init(aggregates_pool, funcs_info, num_new_keys);
+
 }
 
 #ifndef __clang__
@@ -708,6 +830,14 @@ bool Aggregator::executeOnBlock(Block & block, AggregatedDataVariants & result,
 		instruction.arguments = aggregate_columns[i].data();
 	}
 
+	AggregateFunctionsInfo vagg_info;
+	for (auto & inst : aggregate_instructions_vectorized)
+	{
+		vagg_info.function_ptrs.emplace_back(inst.that);
+		vagg_info.state_sizes.emplace_back(inst.that->sizeOfData());
+		vagg_info.sum_state_sizes += vagg_info.state_sizes.back();
+	}
+
 	aggregate_instructions_vectorized.emplace_back();
 	aggregate_instructions_vectorized.back().that = nullptr;
 	aggregate_instructions.emplace_back();
@@ -799,14 +929,29 @@ bool Aggregator::executeOnBlock(Block & block, AggregatedDataVariants & result,
 		/// Когда нет динамически скомпилированного кода.
 		else
 		{
-		#define M(NAME, IS_TWO_LEVEL) \
-			else if (result.type == AggregatedDataVariants::Type::NAME) \
-				executeImpl(*result.NAME, result.aggregates_pool, rows, key_columns, &aggregate_instructions[0],  \
-					&aggregate_instructions_vectorized[0], result.key_sizes, key, no_more_keys, overflow_row_ptr);
+			if (aggregate_instructions[0].that)
+			{
+			#define M(NAME, IS_TWO_LEVEL) \
+				else if (result.type == AggregatedDataVariants::Type::NAME) \
+					executeImpl(*result.NAME, result.aggregates_pool, rows, key_columns, &aggregate_instructions[0],  \
+						result.key_sizes, key, no_more_keys, overflow_row_ptr);
 
-			if (false) {}
-			APPLY_FOR_AGGREGATED_VARIANTS(M)
-		#undef M
+				if (false) {}
+				APPLY_FOR_AGGREGATED_VARIANTS(M)
+			#undef M
+			}
+
+			if (aggregate_instructions_vectorized[0].that)
+			{
+			#define M(NAME, IS_TWO_LEVEL) \
+				else if (result.type == AggregatedDataVariants::Type::NAME) \
+					executeImplVec(*result.NAME.vectorized, result.aggregates_pool, rows, key_columns,  \
+						vagg_info, result.key_sizes, key, no_more_keys, overflow_row_ptr, result.block_states_list);
+
+				if (false) {}
+				APPLY_FOR_AGGREGATED_VARIANTS(M)
+			#undef M
+			}
 		}
 	}
 
