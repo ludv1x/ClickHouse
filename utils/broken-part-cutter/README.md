@@ -1,4 +1,6 @@
-broken-part-cutter fixes storage after incorrect OPTIMIZE FINAL (ClickHouse version v1.1.54181 and earlier)
+broken-part-cutter util fixes storage after incorrect OPTIMIZE FINAL (ClickHouse version v1.1.54181 and earlier)
+
+Binary for Ubuntu 14 could be downloaded here https://yadi.sk/d/9KckVky73GAbLo
 
 When the util can work:
 * Table contains only single part (in single partition)
