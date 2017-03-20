@@ -2,8 +2,7 @@ broken-part-cutter fixes storage after incorrect OPTIMIZE FINAL (ClickHouse vers
 
 When the util can work:
 * Table contains only single part (in single partition)
-* This part was broken after several OPTIMIZE FINAL calls, you can observers errors like
-`Index file /opt/clickhouse/../.../.../primary.idx is unexpectedly long`.
+* This part was broken after several OPTIMIZE FINAL calls, you can observers errors like `Index file /opt/clickhouse/../.../.../primary.idx is unexpectedly long`.
 
 Note:
 * This fixer removes first 8192*N first rows of your table (they cannot be restored)
@@ -14,6 +13,7 @@ How to use:
 * Stop clickhouse-server: `sudo service clickhouse-server stop`
 * Move deatached parts (i.e. parts from deateached directory) to storagre dir
 `mv  /opt/clickhouse/data/db/broken_table/detached/* /opt/clickhouse/data/db/broken_table/`
+* Check that only single part in the broken table
 * run broken-part-cutter `./broken-part-cutter <db> <broken_table>`
-* it should finished sucessfully
-* if it fails, you could revert chnges, just copy content of created backup dir into broken partition
+* It should be finished sucessfully
+* If it fails, you could revert changes, just copy content of created backup dir into broken partition (it will looks like `19700101_19700101_2_8_3_backup`), contact with me
