@@ -108,6 +108,8 @@ public:
 
 	MergeTreeData & getData() { return data; }
 	const MergeTreeData & getData() const { return data; }
+	
+	String getFullPath() const { return full_path; }
 
 private:
 	String path;

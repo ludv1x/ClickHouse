@@ -13,6 +13,8 @@
 #include <DB/Storages/MergeTree/MergeTreeDataPart.h>
 #include <DB/Storages/MergeTree/MergeTreeData.h>
 
+#include <iostream>
+
 #include <Poco/File.h>
 
 
@@ -470,7 +472,7 @@ void MergeTreeDataPart::loadIndex()
 					ErrorCodes::CANNOT_READ_ALL_DATA);
 
 		if (!index_file.eof())
-			throw Exception("Index file " + index_path + " is unexpectedly long", ErrorCodes::EXPECTED_END_OF_FILE);
+			std::cerr << "Index file " + index_path + " is unexpectedly long" << "\n";
 	}
 
 	size_in_bytes = calcTotalSize(storage.full_path + name + "/");
