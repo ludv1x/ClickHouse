@@ -17,7 +17,11 @@ di06 UInt64,
 di07 UInt64,
 di08 UInt64,
 di09 UInt64,
-di10 UInt64
+di10 UInt64,
+t Nested(
+da11 UInt64,
+da12 String
+)
 )
 ENGINE = CollapsingMergeTree(p, (ks, intHash64(ki)), 8192, Sign)"
 
@@ -36,7 +40,9 @@ number AS di06,
 number AS di07,
 number AS di08,
 number AS di09,
-number AS di10
+number AS di10,
+[number] AS \`t.da11\`,
+[hex(number)] AS \`t.da12\`
 FROM system.numbers LIMIT 4000000"
 
 while [[ `clickhouse-client -q "select count() from system.parts where active AND database = 'test' AND table = 'broken_part'"` -ne 1 ]] ; do
@@ -44,6 +50,12 @@ while [[ `clickhouse-client -q "select count() from system.parts where active AN
 	echo "Parts:" `clickhouse-client -q "select count() from system.parts where active AND database = 'test' AND table = 'broken_part'"`
 done
 }
+
+function get_hash {
+	clickhouse-client --max_threads=1 -q "SELECT cityHash64(h1)
+	FROM (SELECT groupArray(cityHash64(p, Sign, ks, ki, ds, di01, di02, di03, di04, di05, di06, di07, di08, di09, di10, \`t.da11\`, \`t.da12\`)) AS h1 FROM test.broken_part_ref)"
+}
+
 
 sudo service clickhouse-server stop
 rm -rf /opt/clickhouse//data/test/broken_part_src/*
@@ -61,7 +73,7 @@ clickhouse-client -q "OPTIMIZE TABLE test.broken_part PARTITION 197001 FINAL"
 # check that part is broken
 clickhouse-client -q "SELECT sum(ignore(*)) FROM test.broken_part" || true
 
-ref_hash=`clickhouse-client --max_threads=1 -q "SELECT cityHash64(*) FROM (SELECT groupArray(cityHash64(*)) FROM test.broken_part_ref)"`
+ref_hash=`get_hash`
 sudo service clickhouse-server stop &> /dev/null
 
 # build util and run fixer
@@ -69,7 +81,8 @@ sudo service clickhouse-server stop &> /dev/null
 
 sudo service clickhouse-server start &> /dev/null
 sleep 2
+
 echo $ref_hash
-clickhouse-client --max_threads=1 -q "SELECT cityHash64(*) FROM (SELECT groupArray(cityHash64(*)) FROM test.broken_part_ref)"
+get_hash
 
 

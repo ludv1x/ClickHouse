@@ -47,6 +47,7 @@
 #include <DB/DataStreams/MaterializingBlockInputStream.h>
 #include <DB/DataStreams/ExpressionBlockInputStream.h>
 #include <DB/Interpreters/Settings.h>
+#include <DB/Common/escapeForFileName.h>
 #include <Poco/Util/Application.h>
 
 using namespace DB;
@@ -79,7 +80,7 @@ static void fixStorage(StorageMergeTree & storage)
 	std::map<std::string, size_t> column_mrk_sizes;
 	for (const auto & name_and_type : part->columns)
 	{
-		std::string column_mrk_file = part_path + name_and_type.name + ".mrk";
+		std::string column_mrk_file = part_path + escapeForFileName(name_and_type.name) + ".mrk";
 		size_t size_of_column_bytes = getFileSize(column_mrk_file);
 		size_t size_of_column_marks = size_of_column_bytes / 16;
 		
@@ -153,8 +154,8 @@ static void fixStorage(StorageMergeTree & storage)
 	
 	for (const auto & column : max_columns)
 	{
-		Poco::File(part_path + column + ".mrk").copyTo(backup_dir);
-		Poco::File(part_path + column + ".bin").copyTo(backup_dir);
+		Poco::File(part_path + escapeForFileName(column) + ".mrk").copyTo(backup_dir);
+		Poco::File(part_path + escapeForFileName(column) + ".bin").copyTo(backup_dir);
 	}
 	
 	/// Initilize readers and writers
@@ -219,15 +220,15 @@ static void fixStorage(StorageMergeTree & storage)
 	Poco::File(tmp_dir + "primary.idx").moveTo(part_path);
 	for (const std::string & column : max_columns)
 	{
-		Poco::File(tmp_dir + column + ".bin").moveTo(part_path);
-		Poco::File(tmp_dir + column + ".mrk").moveTo(part_path);
+		Poco::File(tmp_dir + escapeForFileName(column) + ".bin").moveTo(part_path);
+		Poco::File(tmp_dir + escapeForFileName(column) + ".mrk").moveTo(part_path);
 	}
 	Poco::File(tmp_dir).remove(true);
 	
 	for (const std::string & column : max_columns)
 	{
-		if (getFileSize(part_path + column + ".mrk") != min_marks * 16)
-			throw Exception("Unexpected size of " + part_path + column + ".mrk");
+		if (getFileSize(part_path + escapeForFileName(column) + ".mrk") != min_marks * 16)
+			throw Exception("Unexpected size of " + part_path + escapeForFileName(column) + ".mrk");
 	}
 	
 	/// Update checksums

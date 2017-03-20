@@ -8,7 +8,7 @@ When the util can work:
 
 Note:
 * This fixer removes first 8192*N first rows of your table (they cannot be restored)
-* N - is not greater than number of OPTIMIZE FINAL queries called for before v1.1.54181
+* N - less or equal than number of OPTIMIZE FINAL queries called for before v1.1.54181
 * The exact number of removed lines will be printed by the util: `Will cut first 16384 rows of PK columns`
 
 How to use:
