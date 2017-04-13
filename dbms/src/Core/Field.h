@@ -47,16 +47,16 @@ public:
         /// Type tag.
         enum Which
         {
-            Null                 = 0,
-            UInt64                = 1,
-            Int64                = 2,
-            Float64                = 3,
+            Null                = 0,
+            UInt64              = 1,
+            Int64               = 2,
+            Float64             = 3,
 
             /// Non-POD types.
 
-            String                = 16,
-            Array                = 17,
-            Tuple                = 18,
+            String              = 16,
+            Array               = 17,
+            Tuple               = 18,
         };
 
         static const int MIN_NON_POD = 16;
