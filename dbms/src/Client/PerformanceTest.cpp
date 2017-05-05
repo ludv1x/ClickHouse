@@ -585,6 +585,7 @@ public:
         const String & default_database_,
         const String & user_,
         const String & password_,
+        const bool & lite_output_,
         const std::vector<std::string> & input_files,
         const std::vector<std::string> & tags,
         const std::vector<std::string> & without_tags,
@@ -594,7 +595,8 @@ public:
         const std::vector<std::string> & without_names_regexp)
         : connection(host_, port_, default_database_, user_, password_),
           testsConfigurations(input_files.size()),
-          gotSIGINT(false)
+          gotSIGINT(false),
+          lite_output(lite_output_)
     {
         if (input_files.size() < 1)
         {
@@ -639,6 +641,7 @@ private:
     bool gotSIGINT;
     std::vector<StopCriterions> stopCriterions;
     std::string main_metric;
+    bool lite_output;
 
 // TODO: create enum class instead of string
 #define incFulfilledCriterions(index, CRITERION)                                                            \
@@ -792,13 +795,18 @@ private:
         AbstractConfig metricsView(testConfig->createView("metrics"));
         Keys metrics;
         metricsView->keys(metrics);
+        main_metric = testConfig->getString("main_metric", "");
 
-        if (std::find(metrics.begin(), metrics.end(), "main_metric") != metrics.end())
-        {
-            main_metric = metricsView->getString("main_metric");
-            metrics.erase( std::remove(metrics.begin(), metrics.end(), "main_metric"), metrics.end() );
+        if (!main_metric.empty()) {
+            if (std::find(metrics.begin(), metrics.end(), main_metric) == metrics.end())
+                metrics.push_back(main_metric);
+        } else {
+            if (lite_output)
+                throw Poco::Exception("Specify main_metric for lite output", 1);
         }
-        checkMetricInput(metrics);
+
+        if (metrics.size() > 0)
+            checkMetricsInput(metrics);
 
         statistics.resize(timesToRun * queries.size());
         for (size_t numberOfLaunch = 0; numberOfLaunch < timesToRun; ++numberOfLaunch)
@@ -826,9 +834,9 @@ private:
             runQueries(queriesWithIndexes);
         }
 
-        if (metrics.size() == 1)
+        if (lite_output)
         {
-            minOutput(metrics[0]);
+            minOutput(main_metric);
         }
         else
         {
@@ -836,7 +844,7 @@ private:
         }
     }
 
-    void checkMetricInput(const Strings & metrics) const
+    void checkMetricsInput(const Strings & metrics) const
     {
         std::vector<std::string> loopMetrics
             = {"min_time", "quantiles", "total_time", "queries_per_second", "rows_per_second", "bytes_per_second"};
@@ -1115,6 +1123,7 @@ public:
         jsonOutput["hostname"].set(hostname);
         jsonOutput["Number of CPUs"].set(sysconf(_SC_NPROCESSORS_ONLN));
         jsonOutput["test_name"].set(testName);
+        jsonOutput["main_metric"].set(main_metric);
 
         if (substitutions.size())
         {
@@ -1240,6 +1249,7 @@ int mainEntryClickhousePerformanceTest(int argc, char ** argv)
         boost::program_options::options_description desc("Allowed options");
         desc.add_options()
             ("help",                                                                  "produce help message")
+            ("lite",                                                                  "use lite version of output")
             ("host,h",              value<std::string>()->default_value("localhost"), "")
             ("port",                value<UInt16>()->default_value(9000),             "")
             ("user",                value<std::string>()->default_value("default"),   "")
@@ -1272,7 +1282,7 @@ int mainEntryClickhousePerformanceTest(int argc, char ** argv)
         {
             std::cout << "Usage: " << argv[0] << " [options] [test_file ...] [tests_folder]\n";
             std::cout << desc << "\n";
-            return 1;
+            return 0;
         }
 
         if (!options.count("input-files"))
@@ -1325,6 +1335,7 @@ int mainEntryClickhousePerformanceTest(int argc, char ** argv)
             options["database"].as<std::string>(),
             options["user"].as<std::string>(),
             options["password"].as<std::string>(),
+            options.count("lite") > 0,
             options["input-files"].as<Strings>(),
             tests_tags,
             skip_tags,
