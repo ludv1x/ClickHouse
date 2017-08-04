@@ -8,6 +8,7 @@
 #include <Parsers/ParserUseQuery.h>
 #include <Parsers/ParserSetQuery.h>
 #include <Parsers/ParserAlterQuery.h>
+#include "ParserSystemQuery.h"
 
 
 namespace DB
@@ -25,6 +26,7 @@ bool ParserQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     ParserUseQuery use_p;
     ParserSetQuery set_p;
     ParserOptimizeQuery optimize_p;
+    ParserSystemQuery system_p;
 
     bool res = query_with_output_p.parse(pos, node, expected)
         || insert_p.parse(pos, node, expected)
@@ -34,7 +36,8 @@ bool ParserQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         || alter_p.parse(pos, node, expected)
         || use_p.parse(pos, node, expected)
         || set_p.parse(pos, node, expected)
-        || optimize_p.parse(pos, node, expected);
+        || optimize_p.parse(pos, node, expected)
+        || system_p.parse(pos, node, expected);
 
     return res;
 }
